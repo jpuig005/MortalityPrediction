@@ -1,0 +1,247 @@
+---
+title: "BusinessAnalytics"
+author: "Belén, Enxhi, Joan"
+date: "28 May 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+# Libraries
+
+library("dplyr")
+library("lubridate") 
+library("tidyr")
+library("DMwR")
+library("ggplot2")
+library("ggcorrplot")
+library("dplyr")
+library("VIM")
+```
+
+## PART 1: IMPORT AND JOIN TABLES
+
+```{r cars}
+
+## 1.1 Download tables
+
+OutputEvents <- read.csv("OUTPUTEVENTS.csv",header = TRUE, fill = TRUE)
+InputEvents <- read.csv("INPUTEVENTS_MV.csv",header = TRUE, fill = TRUE)
+Prescriptions <- read.csv("PRESCRIPTIONS.csv",header = TRUE, fill = TRUE)
+LabEvents <- read.csv("LABEVENTS.csv",header = TRUE, fill = TRUE)
+DItems <- read.csv("D_ITEMS.csv",header = TRUE, fill = TRUE)
+Admissions <- read.csv("ADMISSIONS.csv",header = TRUE, fill = TRUE)
+Patient <- read.csv("PATIENTS.csv",header = TRUE, fill = TRUE)
+IcuStays <- read.csv("ICUSTAYS.csv",header = TRUE, fill = TRUE)
+diagnoses_icd <- read.csv("DIAGNOSES_ICD.csv",header = TRUE, fill = TRUE)
+icd9_CODES <- read.csv("D_ICD_DIAGNOSES.csv",header = TRUE, fill = TRUE)
+
+## 1.2 Get rid of the patients that had more than one admission, we care about the first one
+
+Admissions[!duplicated(Admissions$SUBJECT_ID),] %>%
+  left_join(., IcuStays, by = "SUBJECT_ID") -> x_df
+
+x_df[!duplicated(x_df$SUBJECT_ID),] %>%
+  left_join(., Patient, by = "SUBJECT_ID") -> x_df
+
+## 1.3 Define AGE variable
+
+x_df$AGE <- year(as.Date(x_df$INTIME)) - year(as.Date(x_df$DOB))
+x_df$AGE[x_df$AGE == 300] <- 90
+
+## 1.4 Eliminate young patients ( < 15 years)
+
+x_df %>% filter(AGE > 15) -> x_df
+
+colnames(x_df)[3] <- "HADM_ID"
+x_df$HADM_ID.y <- NULL
+
+
+## 1.5 Determine OUTPUTEVENTS attributes and allocate them to each patient
+
+Feature_outputevents <- c(43175,226559, 226560, 226561, 226584, 226563, 226564, 226565,
+                          226567, 226557, 226558, 227488, 227489)
+
+Patient_list <- x_df$HADM_ID
+
+OutputEvents %>% select(HADM_ID, ITEMID, VALUE, VALUEUOM) %>%
+  filter(HADM_ID %in% Patient_list)  %>%
+  filter(ITEMID %in% Feature_outputevents) %>%
+  filter(!is.na(VALUE)) %>%
+  aggregate( VALUE ~ ITEMID+HADM_ID,.,mean) -> read_outev
+
+x_train <- spread(read_outev, ITEMID, VALUE)
+```
+
+
+
+```{r}
+
+## 1.6 Determine LABEVENTS attributes and allocate them to each patient
+
+Feature_labevents <- c(50821, 50816, 51006, 51300, 51301, 50882, 950824, 50983,
+                       50822, 50971, 50885)
+
+
+LabEvents %>% select(HADM_ID, ITEMID, VALUE, VALUEUOM) %>%
+  filter(ITEMID %in% Feature_labevents) %>% 
+  filter(HADM_ID %in% Patient_list) -> read_labev
+
+read_labev$VALUE <- as.numeric(as.character(read_labev$VALUE))
+
+read_labev %>% filter(!is.na(VALUE)) %>%
+  aggregate( VALUE ~ ITEMID+HADM_ID,.,mean) -> read_labev
+
+x_train_2 <- spread(read_labev, ITEMID, VALUE)
+```
+
+
+
+```{r}
+
+## 1.7 Get ICD-9 codes allocate them to each patient
+
+diagnoses_icd %>% filter(SEQ_NUM == 1 & HADM_ID %in% Patient_list & ICD9_CODE != "") -> read_icd
+
+read_icd$ICD9_CODE <- substr(read_icd$ICD9_CODE, 1, 3)
+
+read_icd %>% filter(substr(ICD9_CODE,1,1) != "V") -> read_icd
+
+read_icd$ICD9_CODE <- as.numeric(read_icd$ICD9_CODE)
+
+read_icd$GCODE <- cut(read_icd$ICD9_CODE, c(1,139,239,279,289,319,389,459,519,579,629,679,
+                                            709,739,759,789,796,799,999))
+levels(read_icd$GCODE) <- as.character(seq(1,20))
+
+diagnoses_icd %>% filter(SEQ_NUM == 1 & HADM_ID %in% Patient_list & ICD9_CODE != "") %>%
+  filter(substr(ICD9_CODE,1,1) == "V") -> read_icd_V
+
+read_icd_V$GCODE <- 20
+
+read_icd <- rbind(read_icd, read_icd_V)
+```
+
+
+
+```{r}
+
+## 1.8 Get General Patient Information
+
+x_df %>% select(HADM_ID, ADMISSION_TYPE, DEATHTIME, ADMISSION_LOCATION, INSURANCE, LANGUAGE, RELIGION, MARITAL_STATUS,
+                ETHNICITY, DIAGNOSIS, GENDER, AGE, INTIME, OUTTIME) -> x_train_4
+
+x_train_4$DEATH <- rep(0, nrow(x_train_4))
+
+## 1.9 Construct the final dataframe
+
+x_train_3 <- select(read_icd, HADM_ID, GCODE)
+
+x_train_3 %>% left_join(.,x_train_2, by = "HADM_ID") %>%
+  left_join(.,x_train, by = "HADM_ID") %>% 
+  left_join(.,x_train_4, by = "HADM_ID")-> x
+
+x$DEATH[x$DEATHTIME == ""] <- 0
+x$DEATH[x$DEATHTIME != ""] <- 1
+
+
+x$INTIME <- as.Date(x$INTIME, "%Y-%m-%d")
+x$OUTTIME <- as.Date(x$OUTTIME, "%Y-%m-%d")
+
+x$LENGTHDUR <- x$OUTTIME - x$INTIME
+
+write.csv(x = x, file = "x_mimic.csv")
+```
+
+## PART 2: DATA CLEANING AND PROCESSING 
+
+```{r}
+
+# 2.1 Load data
+raw_df <- read.csv(file = "x_mimic.csv", header = TRUE, sep = ",")
+
+# 2.2 Eliminate patients without GCode (38591 in total)
+df <- data.frame(raw_df[!(is.na(raw_df$GCODE) | raw_df$GCODE==""), ])
+
+# 2.3 Eliminate patients older than 100 years old (38569 in total)
+df %>%
+  filter(AGE < 100) -> df
+
+# 2.4 Create a variable with patients that have died
+df$DEATH[df$DEATHTIME!=""] <- 1
+
+# 2.5 Drop outliers
+remove_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm, ...)
+  H <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - H)] <- NA
+  y[x > (qnt[2] + H)] <- NA
+  y
+}
+
+i=0
+for (i in 4:25) {
+  df[,i] <- remove_outliers(df[,i])
+}
+
+# 2.6 Replace missing values using mean
+for(i in 1:ncol(df)){
+  df[is.na(df[,i]), i] <- mean(df[,i], na.rm = TRUE)
+}
+
+# 2.7 Summarize some values:
+
+# 2.7.1 Potassium (take the average)
+df$POTASSIUM <- rowMeans(df[c('X50822', 'X50971')], na.rm=TRUE)
+
+# 2.7.2 White blood cells (take the average)
+df$WBC <- rowMeans(df[c('X51300', 'X51301')], na.rm=TRUE)
+
+# 2.7.3 Urine output (sum of all features)
+df$URINE <- rowSums(df[c("X226557", "X226558", "X226559", "X226560", 
+                         "X226561", "X226563", "X226564", "X226565",
+                         "X226567", "X226584", "X227488", "X227489")], na.rm = TRUE)
+
+```
+
+
+```{r}
+# 8 Select relevant columns
+
+# 2.8.1 Remove repeated columns
+df <- select(df,-c('X50822', 'X50971', 'X51300', 'X51301',
+                   "X226557", "X226558", "X226559", "X226560", 
+                   "X226561", "X226563", "X226564", "X226565",
+                   "X226567", "X226584", "X227488", "X227489")) 
+
+# 2.8.2 Remove 1st column, Death time, Language, In time & Out time
+df <- select(df,-c(1,11,14,21,22))
+
+# 2.9 Rename and reorder columns
+
+# 2.9.1 Rename columns
+names(df)[1]<-"PATIENT_ID"
+names(df)[2]<-"ICD9"
+names(df)[3]<-"OXYGEN"
+names(df)[4]<-"PO2"
+names(df)[5]<-"BICARBONATE"
+names(df)[6]<-"BILIRUBIN"
+names(df)[7]<-"SODIUM"
+names(df)[8]<-"UREA_NITROGEN"
+
+# 2.9.2 Reorder columns
+df <- df[,c(1:8,20:22,17,16,9:15,18,19)]
+
+# 2.10 Remove rows without some information (36102 patients in total)
+df[df==""] <- NA
+df <- df[complete.cases(df),]
+
+# 2.11 Write csv
+write.csv(df, file="ba.csv")
+```
+
+

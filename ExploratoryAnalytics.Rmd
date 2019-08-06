@@ -1,0 +1,41 @@
+---
+title: "ExploratoryAnalytics"
+author: "Belén, Enxhi, Joan"
+date: "28 May 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ 
+```{r}
+
+# Libraries
+library(ggplot2)
+library(GGally)
+library(dplyr)
+library(ggpubr)
+```
+
+ 
+```{r}
+
+## 1 Load the data and discard the categorical variables 
+
+df <- read.csv(file = "ba.csv", header = TRUE, sep = ",")
+
+df %>% select(-c(X, PATIENT_ID, ICD9, GENDER, ADMISSION_TYPE, ADMISSION_LOCATION,
+                 ETHNICITY, DIAGNOSIS, MARITAL_STATUS, RELIGION, INSURANCE, LENGTHDUR)) -> df
+
+## 2 Create the correlation plot
+
+corplot <- ggcorr(df, hjust = 1, size = 5, color = "grey50", layout.exp = 1,
+       label = TRUE, label_size = 3, label_round = 2, label_alpha = TRUE)
+
+## 3 Export the plot as an image
+
+ggexport(corplot, filename = "cor_plot.png", width = 6000, height = 4000, res = 600,
+         layout.exp = 1)
+```
